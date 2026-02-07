@@ -3,37 +3,54 @@ import sys
 import os
 import zipfile
 import glob
+import platform
 
 # -----------------------------
-# Upgrade pip
+# Paths
 # -----------------------------
-print("⚡ Upgrading pip...")
-subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "pip"])
+repo_root = os.path.abspath(os.path.dirname(__file__))
+venv_dir = os.path.join(repo_root, "venv")
+
+if platform.system() == "Windows":
+    venv_python = os.path.join(venv_dir, "Scripts", "python.exe")
+else:
+    venv_python = os.path.join(venv_dir, "bin", "python")
+
+# -----------------------------
+# Create virtual environment
+# -----------------------------
+if not os.path.isdir(venv_dir):
+    print("🐍 Creating virtual environment...")
+    subprocess.check_call([sys.executable, "-m", "venv", venv_dir])
+else:
+    print("✅ Virtual environment already exists")
+
+# -----------------------------
+# Upgrade pip inside venv
+# -----------------------------
+print("⚡ Upgrading pip in venv...")
+subprocess.check_call([venv_python, "-m", "pip", "install", "--upgrade", "pip"])
 
 # -----------------------------
 # Install required packages
 # -----------------------------
-required_packages = ["pandas","numpy","scikit-learn","matplotlib","streamlit","joblib"]
+required_packages = [
+    "pandas",
+    "numpy",
+    "scikit-learn",
+    "matplotlib",
+    "streamlit",
+    "joblib",
+]
 
-for package in required_packages:
-    try:
-        if package=="scikit-learn":
-            import sklearn
-        else:
-            __import__(package)
-        print(f"✅ {package} is installed")
-    except ImportError:
-        print(f"⚠️ Installing {package}...")
-        subprocess.check_call([sys.executable,"-m","pip","install",package])
+print("📦 Installing dependencies into venv...")
+subprocess.check_call([venv_python, "-m", "pip", "install", *required_packages])
 
 # -----------------------------
 # Add repo root to sys.path
 # -----------------------------
-# setup lives at repo root, so use its directory directly
-repo_root = os.path.abspath(os.path.dirname(__file__))
 if repo_root not in sys.path:
     sys.path.insert(0, repo_root)
-    print(f"✅ Added repo root to sys.path: {repo_root}")
 
 # -----------------------------
 # Extract data zip (if present)
@@ -41,6 +58,7 @@ if repo_root not in sys.path:
 data_dir = os.path.join(repo_root, "data")
 preferred_zip = os.path.join(data_dir, "ORCHID_data.zip")
 zip_candidates = glob.glob(os.path.join(data_dir, "*.zip"))
+
 if os.path.isfile(preferred_zip):
     zip_path = preferred_zip
 elif zip_candidates:
@@ -49,7 +67,9 @@ else:
     zip_path = None
 
 if zip_path:
-    extract_dir = os.path.join(data_dir, os.path.splitext(os.path.basename(zip_path))[0])
+    extract_dir = os.path.join(
+        data_dir, os.path.splitext(os.path.basename(zip_path))[0]
+    )
     if not os.path.isdir(extract_dir):
         print(f"📦 Extracting data zip: {zip_path}")
         with zipfile.ZipFile(zip_path, "r") as zf:
@@ -61,11 +81,17 @@ else:
     print("⚠️ No data zip found in data/. Skipping extraction.")
 
 # -----------------------------
-# Train kidney models
+# Train kidney models (using venv python)
 # -----------------------------
 print("🎯 Training left & right kidney models...")
-subprocess.check_call([sys.executable, os.path.join(repo_root,'models','train_kidney_models.py')])
+subprocess.check_call([
+    venv_python,
+    os.path.join(repo_root, "models", "train_kidney_models.py")
+])
 
-print("\n🎉 Setup complete! Models are trained and saved in 'models/'")
-print("📌 Run the Streamlit app from repo root:")
-print("       streamlit run app/streamlit_app.py")
+print("\n🎉 Setup complete!")
+print("➡️ Activate the venv and run Streamlit:")
+print("   source venv/bin/activate  (macOS/Linux)")
+print("   venv\\Scripts\\activate   (Windows)")
+print("📌 After activation, run:")
+print("   streamlit run app/streamlit_app.py")

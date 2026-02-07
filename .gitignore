@@ -1,5 +1,46 @@
+# -----------------------------
+# Existing Project Rules
+# -----------------------------
 # Extracted data CSVs
 data/**/*.csv
+data/**/*.txt
 
 # OS junk
 .DS_Store
+
+# -----------------------------
+# Python & Virtual Environments
+# -----------------------------
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+bin/
+obj/
+
+# -----------------------------
+# Machine Learning & Models
+# -----------------------------
+# Ignore model weights/pickles (they get large)
+models/*.pkl
+models/*.joblib
+
+# -----------------------------
+# IDEs & Tools
+# -----------------------------
+# VS Code settings
+.vscode/
+# Note: Keep .vscode/launch.json if you want 
+# teammates to have the same "Play" button setup.
+
+# Streamlit local config
+.streamlit/config.toml
+.streamlit/secrets.toml
+
+# Logs
+*.log

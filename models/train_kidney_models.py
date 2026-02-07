@@ -134,6 +134,24 @@ all_features = all_features.merge(hemo_scores, on='patient_id', how='left') \
                            .merge(cbc_scores, on='patient_id', how='left')
 
 # -----------------------------
+# Filter out very old patients (age > 89) if an age column exists
+# -----------------------------
+age_col = None
+for c in all_features.columns:
+    if c.lower() == "age":
+        age_col = c
+        break
+if age_col is None:
+    for c in all_features.columns:
+        if "age" in c.lower():
+            age_col = c
+            break
+
+if age_col is not None:
+    all_features[age_col] = pd.to_numeric(all_features[age_col], errors="coerce")
+    all_features = all_features[all_features[age_col].isna() | (all_features[age_col] <= 90)]
+
+# -----------------------------
 # Train left kidney
 # -----------------------------
 left_data = all_features.dropna(subset=['outcome_kidney_left'])
