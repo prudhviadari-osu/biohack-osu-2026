@@ -1,0 +1,71 @@
+import subprocess
+import sys
+import os
+import zipfile
+import glob
+
+# -----------------------------
+# Upgrade pip
+# -----------------------------
+print("⚡ Upgrading pip...")
+subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "pip"])
+
+# -----------------------------
+# Install required packages
+# -----------------------------
+required_packages = ["pandas","numpy","scikit-learn","matplotlib","streamlit","joblib"]
+
+for package in required_packages:
+    try:
+        if package=="scikit-learn":
+            import sklearn
+        else:
+            __import__(package)
+        print(f"✅ {package} is installed")
+    except ImportError:
+        print(f"⚠️ Installing {package}...")
+        subprocess.check_call([sys.executable,"-m","pip","install",package])
+
+# -----------------------------
+# Add repo root to sys.path
+# -----------------------------
+# setup lives at repo root, so use its directory directly
+repo_root = os.path.abspath(os.path.dirname(__file__))
+if repo_root not in sys.path:
+    sys.path.insert(0, repo_root)
+    print(f"✅ Added repo root to sys.path: {repo_root}")
+
+# -----------------------------
+# Extract data zip (if present)
+# -----------------------------
+data_dir = os.path.join(repo_root, "data")
+preferred_zip = os.path.join(data_dir, "ORCHID_data.zip")
+zip_candidates = glob.glob(os.path.join(data_dir, "*.zip"))
+if os.path.isfile(preferred_zip):
+    zip_path = preferred_zip
+elif zip_candidates:
+    zip_path = zip_candidates[0]
+else:
+    zip_path = None
+
+if zip_path:
+    extract_dir = os.path.join(data_dir, os.path.splitext(os.path.basename(zip_path))[0])
+    if not os.path.isdir(extract_dir):
+        print(f"📦 Extracting data zip: {zip_path}")
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            zf.extractall(extract_dir)
+        print(f"✅ Extracted to: {extract_dir}")
+    else:
+        print(f"✅ Data already extracted: {extract_dir}")
+else:
+    print("⚠️ No data zip found in data/. Skipping extraction.")
+
+# -----------------------------
+# Train kidney models
+# -----------------------------
+print("🎯 Training left & right kidney models...")
+subprocess.check_call([sys.executable, os.path.join(repo_root,'models','train_kidney_models.py')])
+
+print("\n🎉 Setup complete! Models are trained and saved in 'models/'")
+print("📌 Run the Streamlit app from repo root:")
+print("       streamlit run app/streamlit_app.py")

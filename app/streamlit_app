@@ -1,0 +1,77 @@
+# -----------------------------
+# streamlit_app.py
+# -----------------------------
+import streamlit as st
+import pandas as pd
+import numpy as np
+import os
+import joblib
+
+st.set_page_config(page_title="Kidney Pre-Perfusion Risk Dashboard", layout="wide")
+st.title("🩺 Kidney Pre-Perfusion Risk Predictor")
+
+# -----------------------------
+# Paths
+# -----------------------------
+repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+data_folder = os.path.join(repo_root, "data")
+models_folder = os.path.join(repo_root, "models")
+
+# -----------------------------
+# Load models
+# -----------------------------
+left_model_path = os.path.join(models_folder, "left_kidney_model.pkl")
+right_model_path = os.path.join(models_folder, "right_kidney_model.pkl")
+
+if not os.path.exists(left_model_path) or not os.path.exists(right_model_path):
+    st.error("❌ Kidney models not found. Run `python setup.py` first to train them.")
+    st.stop()
+
+model_left = joblib.load(left_model_path)
+model_right = joblib.load(right_model_path)
+
+# -----------------------------
+# Load referral data
+# -----------------------------
+referral_csv = os.path.join(data_folder, "OPOReferrals.csv")
+if not os.path.exists(referral_csv):
+    st.error("❌ Referral CSV not found in data/. Make sure ORCHID data is extracted and named correctly.")
+    st.stop()
+
+referrals = pd.read_csv(referral_csv)
+referrals['patient_id'] = referrals['patient_id'].astype(str)
+
+# -----------------------------
+# Patient selection
+# -----------------------------
+patient_id = st.selectbox("Select a patient ID:", referrals['patient_id'].tolist())
+patient_row = referrals[referrals['patient_id'] == patient_id]
+
+if patient_row.empty:
+    st.warning("No data found for this patient.")
+    st.stop()
+
+# -----------------------------
+# Prepare features for prediction
+# -----------------------------
+exclude_cols = ['patient_id','outcome_kidney_left','outcome_kidney_right']
+X_patient = patient_row.drop(columns=[c for c in exclude_cols if c in patient_row.columns], errors='ignore')
+X_patient = X_patient.fillna(0)
+
+# -----------------------------
+# Predict risk scores
+# -----------------------------
+left_risk = model_left.predict_proba(X_patient)[:,1][0]
+right_risk = model_right.predict_proba(X_patient)[:,1][0]
+
+# -----------------------------
+# Display results
+# -----------------------------
+st.subheader(f"Patient ID: {patient_id}")
+st.metric("Left Kidney Risk Score", f"{left_risk:.2f} (0=low, 1=high)")
+st.metric("Right Kidney Risk Score", f"{right_risk:.2f} (0=low, 1=high)")
+
+st.bar_chart(pd.DataFrame({
+    "Left Kidney": [left_risk],
+    "Right Kidney": [right_risk]
+}))

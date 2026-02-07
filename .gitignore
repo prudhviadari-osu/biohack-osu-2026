@@ -1,0 +1,5 @@
+# Extracted data CSVs
+data/**/*.csv
+
+# OS junk
+.DS_Store
