@@ -1,180 +1,130 @@
-# -----------------------------
-# train_kidney_models.py
-# -----------------------------
 import pandas as pd
 import numpy as np
 import os
 import joblib
-from sklearn.ensemble import RandomForestClassifier
+import zipfile
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import roc_auc_score
+from sklearn.metrics import confusion_matrix, roc_auc_score, brier_score_loss
+import xgboost as xgb
 import warnings
-warnings.filterwarnings("ignore")  # suppress sklearn / pandas warnings
 
-# -----------------------------
-# Paths
-# -----------------------------
+warnings.filterwarnings("ignore")
+
+# --- Paths & Data Loading ---
 repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
-REQUIRED_CSVS = [
-    "HemoEvents.csv",
-    "ChemistryEvents.csv",
-    "FluidBalanceEvents.csv",
-    "ABGEvents.csv",
-    "CBCEvents.csv",
-    "OPOReferrals.csv",
-]
-
-def find_data_dir(base_dir, required_files, max_depth=2):
-    def has_required_files(dir_path):
-        return all(os.path.isfile(os.path.join(dir_path, f)) for f in required_files)
-    if has_required_files(base_dir):
-        return base_dir
-    for root, dirs, _ in os.walk(base_dir):
-        rel_depth = os.path.relpath(root, base_dir).count(os.sep)
-        if rel_depth > max_depth:
-            dirs[:] = []
-            continue
-        if has_required_files(root):
-            return root
-    return base_dir
-
-data_folder = find_data_dir(os.path.join(repo_root, "data"), REQUIRED_CSVS)
+data_folder = os.path.join(repo_root, "data")
 models_folder = os.path.join(repo_root, "models")
 os.makedirs(models_folder, exist_ok=True)
 
-# -----------------------------
-# Feature aggregation functions
-# -----------------------------
-def aggregate_hemo(hemo_df):
-    df = hemo_df[['patient_id','measurement_name','measurement_type','value']].copy()
-    df_pivot = df.pivot_table(index='patient_id', columns=['measurement_name','measurement_type'], values='value', aggfunc='mean')
-    df_pivot.columns = [f"{c[0]}_{c[1]}" for c in df_pivot.columns]
-    def compute_hemo_score(row):
-        map_avg = row.get('MAP_Average', np.nan)
-        hr_max = row.get('HeartRate_High', np.nan)
-        hr_min = row.get('HeartRate_Low', np.nan)
-        hr_var = hr_max - hr_min if pd.notnull(hr_max) and pd.notnull(hr_min) else 0
-        score = 0
-        if pd.notnull(map_avg) and map_avg < 65: score += 1
-        if hr_var > 40: score += 1
-        return score / 2
-    df_pivot['hemo_score'] = df_pivot.apply(compute_hemo_score, axis=1)
-    return df_pivot[['hemo_score']].reset_index()
+REQUIRED_FILES = {"OPOReferrals.csv", "HemoEvents.csv", "ChemistryEvents.csv", "ABGEvents.csv", "CBCEvents.csv", "FluidBalanceEvents.csv"}
 
-def aggregate_chem(chem_df):
-    df_pivot = chem_df.pivot_table(index='patient_id', columns='chem_name', values='value', aggfunc='mean')
-    def compute_chem_score(row):
-        score = 0
-        creat = row.get('Creatinine', 0)
-        na = row.get('Sodium', 140)
-        k = row.get('Potassium', 4)
-        if creat > 2.5: score += 1
-        elif creat > 1.5: score += 0.5
-        if na < 135 or na > 145: score += 1
-        if k < 3.5 or k > 5.5: score += 1
-        return min(score/3,1)
-    df_pivot['chem_score'] = df_pivot.apply(compute_chem_score, axis=1)
-    return df_pivot[['chem_score']].reset_index()
+def _find_data_dir(search_root):
+    for root, _, files in os.walk(search_root):
+        if REQUIRED_FILES.issubset(set(files)): return root
+    return None
 
-def aggregate_fluid(fluid_df):
-    urine = fluid_df[fluid_df['fluid_type']=='Output'].groupby('patient_id')['amount'].sum().reset_index()
-    def compute_fluid_score(row):
-        urine_out = row['amount']
-        if urine_out < 500: return 1
-        elif urine_out < 1000: return 0.5
-        else: return 0
-    urine['fluid_score'] = urine.apply(compute_fluid_score, axis=1)
-    return urine[['patient_id','fluid_score']]
+def _ensure_data_dir(base_data_folder):
+    data_dir = _find_data_dir(base_data_folder)
+    if data_dir: return data_dir
+    zip_candidates = [os.path.join(base_data_folder, f) for f in os.listdir(base_data_folder) if f.lower().endswith(".zip")]
+    if not zip_candidates: raise FileNotFoundError("Dataset zip not found.")
+    extract_root = os.path.join(base_data_folder, "extracted_data")
+    os.makedirs(extract_root, exist_ok=True)
+    with zipfile.ZipFile(zip_candidates[0], "r") as zf: zf.extractall(extract_root)
+    return _find_data_dir(extract_root)
 
-def aggregate_abg(abg_df):
-    df_pivot = abg_df.pivot_table(index='patient_id', columns='abg_name', values='value', aggfunc='mean')
-    def compute_abg_score(row):
-        ph = row.get('pH', 7.4)
-        po2 = row.get('pO2', 90)
-        score = 0
-        if ph < 7.35 or ph > 7.45: score += 1
-        if po2 < 80: score += 1
-        return score / 2
-    df_pivot['abg_score'] = df_pivot.apply(compute_abg_score, axis=1)
-    return df_pivot[['abg_score']].reset_index()
+def aggregate_raw(df, value_col, name_col):
+    pivot = df.pivot_table(index='patient_id', columns=name_col, values=value_col, aggfunc=['mean', 'min', 'max'])
+    pivot.columns = [f"{c[1]}_{c[0]}" for c in pivot.columns]
+    return pivot.reset_index()
 
-def aggregate_cbc(cbc_df):
-    df_pivot = cbc_df.pivot_table(index='patient_id', columns='cbc_name', values='value', aggfunc='mean')
-    def compute_cbc_score(row):
-        wbc = row.get('WBC', 7)
-        return 0 if 4 <= wbc <= 11 else 1
-    df_pivot['cbc_score'] = df_pivot.apply(compute_cbc_score, axis=1)
-    return df_pivot[['cbc_score']].reset_index()
-
-# -----------------------------
-# Load CSVs
-# -----------------------------
-hemo_df = pd.read_csv(os.path.join(data_folder,'HemoEvents.csv'))
-chem_df = pd.read_csv(os.path.join(data_folder,'ChemistryEvents.csv'))
-fluid_df = pd.read_csv(os.path.join(data_folder,'FluidBalanceEvents.csv'))
-abg_df = pd.read_csv(os.path.join(data_folder,'ABGEvents.csv'))
-cbc_df = pd.read_csv(os.path.join(data_folder,'CBCEvents.csv'))
-referrals = pd.read_csv(os.path.join(data_folder,'OPOReferrals.csv'))
-
-# -----------------------------
-# Aggregate features
-# -----------------------------
-hemo_scores = aggregate_hemo(hemo_df)
-chem_scores = aggregate_chem(chem_df)
-fluid_scores = aggregate_fluid(fluid_df)
-abg_scores = aggregate_abg(abg_df)
-cbc_scores = aggregate_cbc(cbc_df)
+# --- Load and Preprocess Data ---
+data_dir = _ensure_data_dir(data_folder)
+referrals = pd.read_csv(os.path.join(data_dir, 'OPOReferrals.csv'))
+hemo = aggregate_raw(pd.read_csv(os.path.join(data_dir, 'HemoEvents.csv')), 'value', 'measurement_name')
+chem = aggregate_raw(pd.read_csv(os.path.join(data_dir, 'ChemistryEvents.csv')), 'value', 'chem_name')
+abg = aggregate_raw(pd.read_csv(os.path.join(data_dir, 'ABGEvents.csv')), 'value', 'abg_name')
+cbc = aggregate_raw(pd.read_csv(os.path.join(data_dir, 'CBCEvents.csv')), 'value', 'cbc_name')
+fluid = pd.read_csv(os.path.join(data_dir, 'FluidBalanceEvents.csv'))
+urine = fluid[fluid['fluid_type']=='Output'].groupby('patient_id')['amount'].sum().reset_index()
 
 all_features = referrals.copy()
-all_features = all_features.merge(hemo_scores, on='patient_id', how='left') \
-                           .merge(chem_scores, on='patient_id', how='left') \
-                           .merge(fluid_scores, on='patient_id', how='left') \
-                           .merge(abg_scores, on='patient_id', how='left') \
-                           .merge(cbc_scores, on='patient_id', how='left')
+for df_raw in [hemo, chem, abg, cbc, urine]:
+    all_features = all_features.merge(df_raw, on='patient_id', how='left')
 
-# -----------------------------
-# Filter out very old patients (age > 89) if an age column exists
-# -----------------------------
-age_col = None
-for c in all_features.columns:
-    if c.lower() == "age":
-        age_col = c
-        break
-if age_col is None:
-    for c in all_features.columns:
-        if "age" in c.lower():
-            age_col = c
-            break
+# --- Risk Tiering Logic ---
+def get_risk_tier(score):
+    risk_score = 1 - score 
+    if risk_score < 0.3: return "LOW (Ideal)"
+    if risk_score < 0.7: return "MODERATE"
+    return "HIGH (Critical)"
 
-if age_col is not None:
-    all_features[age_col] = pd.to_numeric(all_features[age_col], errors="coerce")
-    all_features = all_features[all_features[age_col].isna() | (all_features[age_col] <= 90)]
+def train_risk_model(side, iterations=10):  # Updated to 10 iterations
+    target_col = f'outcome_kidney_{side}'
+    data = all_features.dropna(subset=[target_col])
+    X = data.select_dtypes(include=[np.number]).drop(columns=['patient_id'], errors='ignore').fillna(0)
+    y = data[target_col].apply(lambda x: 1 if x == 'Transplanted' else 0)
 
-# -----------------------------
-# Train left kidney
-# -----------------------------
-left_data = all_features.dropna(subset=['outcome_kidney_left'])
-left_data['patient_id'] = left_data['patient_id'].astype(str)
-X_left = left_data.drop(columns=['patient_id','outcome_kidney_left','outcome_kidney_right'], errors='ignore')
-X_left = X_left.select_dtypes(include=[np.number])
-y_left = left_data['outcome_kidney_left'].apply(lambda x: 1 if x=='Transplanted' else 0)
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
 
-model_left = RandomForestClassifier(n_estimators=100, random_state=42)
-model_left.fit(X_left, y_left)
-joblib.dump(model_left, os.path.join(models_folder,'left_kidney_model.pkl'))
+    results_history = []
+    final_model = None
 
-# -----------------------------
-# Train right kidney
-# -----------------------------
-right_data = all_features.dropna(subset=['outcome_kidney_right'])
-right_data['patient_id'] = right_data['patient_id'].astype(str)
-X_right = right_data.drop(columns=['patient_id','outcome_kidney_left','outcome_kidney_right'], errors='ignore')
-X_right = X_right.select_dtypes(include=[np.number])
-y_right = right_data['outcome_kidney_right'].apply(lambda x: 1 if x=='Transplanted' else 0)
+    for i in range(iterations):
+        n_trees = (i + 1) * 25
+        model = xgb.XGBClassifier(
+            n_estimators=n_trees,
+            learning_rate=0.1,  
+            max_depth=4,
+            min_child_weight=2,
+            random_state=42,
+            objective='binary:logistic',
+            eval_metric='logloss'
+        )
+        
+        model.fit(X_train, y_train)
+        
+        probs = model.predict_proba(X_test)[:, 1]
+        auc = roc_auc_score(y_test, probs)
+        brier = brier_score_loss(y_test, probs)
+        
+        tier_counts = pd.Series([get_risk_tier(p) for p in probs]).value_counts()
+        
+        results_history.append({
+            "Step": i + 1,
+            "Trees": n_trees,
+            "AUC_Discrim": round(auc, 3),
+            "Brier_Error": round(brier, 4),
+            "Ideal_N": tier_counts.get("LOW (Ideal)", 0),
+            "Critical_N": tier_counts.get("HIGH (Critical)", 0)
+        })
+        final_model = model
 
-model_right = RandomForestClassifier(n_estimators=100, random_state=42)
-model_right.fit(X_right, y_right)
-joblib.dump(model_right, os.path.join(models_folder,'right_kidney_model.pkl'))
+    joblib.dump(final_model, os.path.join(models_folder, f'{side}_kidney_model.pkl'))
+    return results_history
 
-print("✅ Left & Right kidney models trained and saved successfully!")
+# --- Execution ---
+print("\n" + "🚀 RUNNING 10-ITERATION RISK MODEL TRAINING (LR=0.1)")
+print("="*75)
+
+hist_l = train_risk_model('left', iterations=10)
+hist_r = train_risk_model('right', iterations=10)
+
+def print_performance_table(side, history):
+    print(f"\n📈 {side.upper()} KIDNEY: RISK CALIBRATION REPORT")
+    print("-" * 75)
+    df = pd.DataFrame(history)
+    print(df.to_string(index=False))
+
+print_performance_table('left', hist_l)
+print_performance_table('right', hist_r)
+
+# --- Summary Comparison ---
+print("\n" + "="*75)
+print(f"{'10-STEP IMPROVEMENT SUMMARY':^75}")
+print("-" * 75)
+print(f"Left Kidney AUC:  Initial {hist_l[0]['AUC_Discrim']} ➔ Final {hist_l[-1]['AUC_Discrim']}")
+print(f"Right Kidney AUC: Initial {hist_r[0]['AUC_Discrim']} ➔ Final {hist_r[-1]['AUC_Discrim']}")
+print("="*75)
+
+print("\n✅ Risk models saved. Ready for deployment.")
