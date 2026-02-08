@@ -29,6 +29,7 @@ obj/
 # Ignore model weights/pickles (they get large)
 models/*.pkl
 models/*.joblib
+models/effective_features.*
 
 # -----------------------------
 # IDEs & Tools
