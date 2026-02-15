@@ -27,9 +27,9 @@ obj/
 # Machine Learning & Models
 # -----------------------------
 # Ignore model weights/pickles (they get large)
-models/*.pkl
-models/*.joblib
-models/effective_features.*
+*.pkl
+*.joblib
+effective_features.*
 
 # -----------------------------
 # IDEs & Tools
