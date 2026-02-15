@@ -5,9 +5,13 @@ import zipfile
 import glob
 import platform
 
+# -----------------------------
 # Paths
+# -----------------------------
 repo_root = os.path.abspath(os.path.dirname(__file__))
 venv_dir = os.path.join(repo_root, "venv")
+
+print(f"📁 Repo root: {repo_root}")
 
 if platform.system() == "Windows":
     venv_python = os.path.join(venv_dir, "Scripts", "python.exe")
@@ -16,18 +20,33 @@ else:
     venv_python = os.path.join(venv_dir, "bin", "python")
     venv_pip = os.path.join(venv_dir, "bin", "pip")
 
+print(f"🐍 Using Python: {venv_python}")
+
+# -----------------------------
+# Environment guards for pip
+# -----------------------------
+os.environ["PIP_DISABLE_PIP_VERSION_CHECK"] = "1"
+os.environ["PIP_NO_CACHE_DIR"] = "1"
+
 # -----------------------------
 # macOS Specific Dependency (libomp for XGBoost)
 # -----------------------------
 if platform.system() == "Darwin":
     print("🍎 Checking for macOS-specific XGBoost dependencies...")
     try:
-        # Check if brew is installed, then install libomp
-        subprocess.check_call(["brew", "--version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.check_call(
+            ["brew", "--version"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
         print("🍺 Homebrew found. Ensuring libomp is installed...")
-        subprocess.check_call(["brew", "install", "libomp"], stdout=subprocess.DEVNULL)
+        subprocess.check_call(
+            ["brew", "install", "libomp"],
+            stdout=subprocess.DEVNULL
+        )
     except Exception:
-        print("⚠️ Homebrew not found or libomp install failed. XGBoost might require 'brew install libomp' to run.")
+        print("⚠️ Homebrew not found or libomp install failed. "
+              "XGBoost might require 'brew install libomp' to run.")
 
 # -----------------------------
 # Create virtual environment
@@ -35,42 +54,71 @@ if platform.system() == "Darwin":
 if not os.path.isdir(venv_dir):
     print("🐍 Creating virtual environment...")
     subprocess.check_call([sys.executable, "-m", "venv", venv_dir])
+else:
+    print("✅ Virtual environment already exists.")
 
 # -----------------------------
-# Install/Upgrade Packages
+# Install / Upgrade Packages
 # -----------------------------
 print("📦 Installing dependencies (including XGBoost)...")
-# Added xgboost to the list
-base_packages = ["pandas", "numpy", "scikit-learn", "matplotlib", "streamlit", "joblib", "xgboost", "plotly"]
+
+base_packages = [
+    "pandas",
+    "numpy",
+    "scikit-learn",
+    "matplotlib",
+    "streamlit",
+    "joblib",
+    "xgboost",
+    "plotly",
+]
 
 subprocess.check_call([venv_python, "-m", "pip", "install", "--upgrade", "pip"])
 subprocess.check_call([venv_python, "-m", "pip", "install", *base_packages])
 
 # -----------------------------
-# Extraction Logic
+# Data Extraction Logic
 # -----------------------------
 data_dir = os.path.join(repo_root, "data")
 zip_candidates = glob.glob(os.path.join(data_dir, "*.zip"))
+
 if zip_candidates:
     extract_path = os.path.join(data_dir, "ORCHID_data")
+
     if not os.path.exists(extract_path):
+        print(f"📦 Extracting data from {zip_candidates[0]} ...")
         with zipfile.ZipFile(zip_candidates[0], "r") as zf:
             zf.extractall(extract_path)
         print(f"✅ Data extracted to {extract_path}")
     else:
         print("✅ Data folder already exists.")
 
+    # Sanity preview of extracted files
+    print("📂 Extracted files preview:")
+    for root, _, files in os.walk(extract_path):
+        for f in files[:5]:
+            print("   ", os.path.join(root, f))
+        break
+else:
+    print("⚠️ No data zip found in data/ directory.")
+
 # -----------------------------
-# RUN TRAINING AND PRINT RESULTS
+# Run Training
 # -----------------------------
 print("\n🎯 Running Kidney Model Training (Iterative XGBoost)...")
+
 training_script = os.path.join(repo_root, "models", "train_kidney_models.py")
 
-# Ensure the models folder exists before training
+if not os.path.isfile(training_script):
+    raise FileNotFoundError(f"❌ Training script not found: {training_script}")
+
 os.makedirs(os.path.join(repo_root, "models"), exist_ok=True)
 
-# Call the script and pipe output to current CMD window
-process = subprocess.Popen([venv_python, training_script], stdout=sys.stdout, stderr=sys.stderr)
+process = subprocess.Popen(
+    [venv_python, training_script],
+    stdout=sys.stdout,
+    stderr=sys.stderr
+)
 process.wait()
 
 print("\n🎉 Setup and Training complete!")
