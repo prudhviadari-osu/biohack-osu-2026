@@ -46,6 +46,7 @@ Kidney utilization decisions are time-sensitive and data-heavy. This project exp
 
 ## Repository Structure
 
+```text
 biohack-osu-2026/
 ├── app/
 │   ├── streamlit_app_nmp.py              # NMP homeostasis dashboard
@@ -60,6 +61,7 @@ biohack-osu-2026/
 │   └── effective_features.json       # generated top features
 ├── setup                             # one-command environment + training script
 └── README.md
+```
 
 ## Data Requirements
 
