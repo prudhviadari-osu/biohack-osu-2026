@@ -4,6 +4,7 @@ import os
 import joblib
 import zipfile
 import json
+from typing import cast
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import (
     confusion_matrix,
@@ -34,15 +35,19 @@ def _find_data_dir(search_root):
         if REQUIRED_FILES.issubset(set(files)): return root
     return None
 
-def _ensure_data_dir(base_data_folder):
+def _ensure_data_dir(base_data_folder: str) -> str:
     data_dir = _find_data_dir(base_data_folder)
-    if data_dir: return data_dir
+    if data_dir:
+        return data_dir
     zip_candidates = [os.path.join(base_data_folder, f) for f in os.listdir(base_data_folder) if f.lower().endswith(".zip")]
     if not zip_candidates: raise FileNotFoundError("Dataset zip not found.")
     extract_root = os.path.join(base_data_folder, "extracted_data")
     os.makedirs(extract_root, exist_ok=True)
     with zipfile.ZipFile(zip_candidates[0], "r") as zf: zf.extractall(extract_root)
-    return _find_data_dir(extract_root)
+    data_dir = _find_data_dir(extract_root)
+    if not data_dir:
+        raise FileNotFoundError("Required dataset files not found after extraction.")
+    return data_dir
 
 def aggregate_raw(df, value_col, name_col):
     pivot = df.pivot_table(index='patient_id', columns=name_col, values=value_col, aggfunc=['mean', 'min', 'max'])
@@ -82,7 +87,9 @@ def select_threshold(y_true, y_prob, max_fpr=0.10):
 def train_risk_model(side, iterations=10, patience=2, min_delta=0.0):  # Updated to 10 iterations
     target_col = f'outcome_kidney_{side}'
     data = all_features.dropna(subset=[target_col])
-    X = data.select_dtypes(include=[np.number]).drop(columns=['patient_id'], errors='ignore').fillna(0)
+    X = data.select_dtypes(include=[np.number]).drop(columns=['patient_id'], errors='ignore')
+    X = X.dropna(how='all', axis=1)
+    X = X.loc[:, X.nunique() > 1]
     y = data[target_col].apply(lambda x: 1 if x == 'Transplanted' else 0)
 
     X_train, X_test, y_train, y_test = train_test_split(
@@ -97,20 +104,21 @@ def train_risk_model(side, iterations=10, patience=2, min_delta=0.0):  # Updated
     for i in range(iterations):
         n_trees = (i + 1) * 25
         model = xgb.XGBClassifier(
-            n_estimators=n_trees,
-            learning_rate=0.075,  
-            max_depth=4,
-            min_child_weight=2,
-            random_state=42,
-            objective='binary:logistic',
-            eval_metric='logloss'
+        n_estimators=n_trees,
+        learning_rate=0.075,  
+        max_depth=4,
+        min_child_weight=2,
+        random_state=42,
+        objective='binary:logistic',
+        eval_metric='logloss',
+        missing=np.nan
         )
         
         # Calibrate with internal CV (prefit is no longer supported in sklearn>=1.4)
-        calibrator_sig = CalibratedClassifierCV(model, method="sigmoid", cv=3)
+        calibrator_sig = CalibratedClassifierCV(estimator = model, method="sigmoid", cv=3)
         calibrator_sig.fit(X_train, y_train)
 
-        calibrator_iso = CalibratedClassifierCV(model, method="isotonic", cv=3)
+        calibrator_iso = CalibratedClassifierCV(estimator = model, method="isotonic", cv=3)
         calibrator_iso.fit(X_train, y_train)
 
         probs_sig = calibrator_sig.predict_proba(X_test)[:, 1]
@@ -150,9 +158,9 @@ def train_risk_model(side, iterations=10, patience=2, min_delta=0.0):  # Updated
             "Brier_Error": round(brier, 4),
             "Calibration": calib_method,
             "Accuracy": round(acc, 3),
-            "Precision": round(prec, 3),
-            "Recall": round(rec, 3),
-            "F1": round(f1, 3),
+            "Precision": round(cast(float, prec), 3),
+            "Recall": round(cast(float, rec), 3),
+            "F1": round(cast(float, f1), 3),
             "FPR": round(fpr, 3),
             "FNR": round(fnr, 3),
             "Threshold": round(threshold, 3),
@@ -174,7 +182,7 @@ def train_risk_model(side, iterations=10, patience=2, min_delta=0.0):  # Updated
     return results_history
 
 # --- Execution ---
-print("\n" + "🚀 RUNNING 10-ITERATION RISK MODEL TRAINING (LR=0.1)")
+print("\n" + " RUNNING 10-ITERATION RISK MODEL TRAINING (LR=0.05)")
 print("="*75)
 
 hist_l = train_risk_model('left', iterations=10)
@@ -183,8 +191,10 @@ hist_r = train_risk_model('right', iterations=10)
 def extract_top_features(side, top_n=12):
     target_col = f'outcome_kidney_{side}'
     data = all_features.dropna(subset=[target_col])
-    X = data.select_dtypes(include=[np.number]).drop(columns=['patient_id'], errors='ignore').fillna(0)
-    y = data[target_col].apply(lambda x: 1 if x == 'Transplanted' else 0)
+    X = data.select_dtypes(include=[np.number]).drop(columns=['patient_id'], errors='ignore')
+    X = X.dropna(how='all', axis=1)
+    X = X.loc[:, X.nunique() > 1]
+    y = data[target_col].apply(lambda x: 1 if str(x).strip().lower() == 'transplanted' else 0)
 
     model = xgb.XGBClassifier(
         n_estimators=200,
@@ -193,7 +203,8 @@ def extract_top_features(side, top_n=12):
         min_child_weight=2,
         random_state=42,
         objective='binary:logistic',
-        eval_metric='logloss'
+        eval_metric='logloss',
+        missing=np.nan
     )
     model.fit(X, y)
     importances = pd.Series(model.feature_importances_, index=X.columns)
@@ -211,7 +222,7 @@ except Exception:
     pass
 
 def print_performance_table(side, history):
-    print(f"\n📈 {side.upper()} KIDNEY: RISK CALIBRATION REPORT")
+    print(f"\n {side.upper()} KIDNEY: RISK CALIBRATION REPORT")
     print("-" * 75)
     df = pd.DataFrame(history)
     print(df.to_string(index=False))
@@ -248,4 +259,4 @@ for metric in ["AUC", "Brier", "Accuracy", "Precision", "Recall", "F1", "FPR", "
     print(f"{metric:<12} | {left_summary[metric]:<20} | {right_summary[metric]:<20}")
 print("="*75)
 
-print("\n✅ Risk models saved. Ready for deployment.")
+print("\n Risk models saved. Ready for deployment.")
